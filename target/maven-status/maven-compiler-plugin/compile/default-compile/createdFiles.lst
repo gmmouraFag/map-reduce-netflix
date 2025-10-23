@@ -1,0 +1,3 @@
+com\example\netflix\NetflixDriver.class
+com\example\netflix\NetflixReducer.class
+com\example\netflix\NetflixMapper.class
