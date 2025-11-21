@@ -1,0 +1,53 @@
+Iniciamos o Hadoop acessando a pasta de scripts e executando os comandos responsáveis por inicializar o HDFS e o YARN, que são os serviços essenciais para o funcionamento do processamento distribuído.
+
+Comandos:
+
+cd C:\hadoop\sbin
+start-dfs.cmd
+start-yarn.cmd
+
+
+Em seguida, criamos no HDFS o diretório que armazenará o arquivo de entrada. O parâmetro -p garante que todas as pastas necessárias sejam criadas mesmo que ainda não existam. Esse diretório será utilizado para receber o arquivo netflix_titles.csv.
+
+Comando:
+
+"%HADOOP_HOME%\bin\hdfs.cmd" dfs -mkdir -p /netflix/in
+
+
+Após criar o diretório, enviamos o arquivo CSV local para o HDFS. Esse arquivo contém os dados que serão processados pelo job MapReduce. O parâmetro -f força a substituição do arquivo caso ele já exista.
+
+Comando:
+
+"%HADOOP_HOME%\bin\hdfs.cmd" dfs -put -f C:\Users\gusta\map-reduce-netflix\netflix_titles.csv /netflix/in/
+
+
+Para confirmar que o arquivo foi enviado corretamente, listamos o conteúdo do diretório no HDFS. Esse passo garante que o dataset está acessível para o job.
+
+Comando:
+
+"%HADOOP_HOME%\bin\hdfs.cmd" dfs -ls -R /netflix/in
+
+
+Com o arquivo disponível no HDFS, compilamos o projeto Java contendo o Mapper, Reducer e Driver. O Maven remove builds antigos e gera o arquivo .jar dentro da pasta target, que será utilizado pelo Hadoop durante a execução do job.
+
+Comando:
+
+cd C:\Users\gusta\map-reduce-netflix
+mvn clean package -DskipTests
+
+
+Antes de executar o job, removemos qualquer diretório de saída existente no HDFS, pois o Hadoop não permite sobrescrever diretórios já existentes. Depois, executamos o job MapReduce usando o JAR recém-gerado.
+Importante: o comando deve chamar somente o JAR, pois sua classe principal já está definida no MANIFEST.
+
+Comandos:
+
+"%HADOOP_HOME%\bin\hdfs.cmd" dfs -rm -r -f /netflix/out_sw
+
+hadoop jar target\netflix-mapreduce-1.0.0.jar /netflix/in /netflix/out_sw --ignore-sw
+
+
+Após o processamento, acessamos o resultado final gerado pelo Reducer. O arquivo part-r-00000 contém todas as estatísticas, incluindo normalização de textos, contagens, palavras mais e menos frequentes e outras informações geradas pelo job. Se o parâmetro --ignore-sw tiver sido utilizado, stopwords serão ignoradas no cálculo.
+
+Comando:
+
+"%HADOOP_HOME%\bin\hdfs.cmd" dfs -cat /netflix/out_sw/part-r-00000
