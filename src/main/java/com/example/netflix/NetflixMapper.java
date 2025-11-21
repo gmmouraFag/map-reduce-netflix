@@ -5,159 +5,161 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Mapper;
 
-import java.text.Normalizer;
-import java.util.*;
-import java.util.regex.Pattern;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class NetflixMapper extends Mapper<LongWritable, Text, Text, IntWritable> {
+
     private static final IntWritable ONE = new IntWritable(1);
-    private static final Text WORD_KEY = new Text();
-    private static final Text TOTAL_WORDS_KEY = new Text("TOTAL_WORDS");
-    private static final Text DESCRIPTIONS_COUNT_KEY = new Text("DESCRIPTIONS_COUNT");
-
-    // CSV: divide por vírgula respeitando aspas
-    private static final Pattern CSV_SPLIT = Pattern.compile(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)");
-
-    private boolean ignoreStopwords = false;
-    private Set<String> stop = new HashSet<>();
-    private int minTokenLen = 1;
-
-    // Log control
-    private boolean LOG_VERBOSE = false;
-    private long lineCount = 0;
-    private long loggedLines = 0;
+    private final Text outKey = new Text();
 
     @Override
-    protected void setup(Context ctx) {
-        // liga/desliga stopwords
-        ignoreStopwords = "true".equalsIgnoreCase(ctx.getConfiguration().get("ignore.stopwords", "false"));
+    protected void map(LongWritable key, Text value, Context context)
+            throws IOException, InterruptedException {
 
-        // tamanho mínimo do token (opcional): -Dmin.token.len=2
-        try {
-            minTokenLen = Integer.parseInt(ctx.getConfiguration().get("min.token.len", "1"));
-            if (minTokenLen < 1) minTokenLen = 1;
-        } catch (Exception ignored) { minTokenLen = 1; }
-
-        // verbosidade: -Dlog.verbose=true
-        LOG_VERBOSE = "true".equalsIgnoreCase(ctx.getConfiguration().get("log.verbose", "false"));
-
-        if (ignoreStopwords) {
-            // PT-BR + EN (básico)
-            String[] arr = ("a,à,á,â,ã,ao,aos,as,com,como,da,das,de,dele,dela,delas,deles,do,dos,e,é,em,entre,essa,esse,esta,este," +
-                    "eu,ela,ele,elas,eles,isso,isto,la,lo,na,nas,no,nos,né,num,nums,numa,umas,uns,ou,os,o,para,pra,pras,pelos,pelas,pelo,pela," +
-                    "por,porque,que,se,sem,sua,suas,seu,seus,tem,ter,um,uma,você,voces,vcs," +
-                    "the,a,an,and,or,of,for,to,in,on,with,as,by,is,are,was,were,be,been,being,at,from,this,that,these,those,it,its,into,about,over,under," +
-                    "after,before,between,while,than,so,not,no,do,does,did,done,can,could,should,would")
-                    .toLowerCase(Locale.ROOT).split("\\s*,\\s*");
-            for (String s : arr) stop.add(stripAccents(s));
-        }
-
-        System.out.println("=== MAPPER: setup ===");
-        System.out.println("Ignore Stopwords ....: " + ignoreStopwords);
-        System.out.println("Min Token Len .......: " + minTokenLen);
-        System.out.println("Log Verbose .........: " + LOG_VERBOSE);
-    }
-
-    @Override
-    protected void map(LongWritable key, Text value, Context ctx) {
-        lineCount++;
-        String line = value.toString().trim();
-        if (line.isEmpty()) return;
-
-        // header (conferência simples)
-        if (key.get() == 0 && line.toLowerCase(Locale.ROOT).contains("title") && line.toLowerCase(Locale.ROOT).contains("description")) {
-            if (LOG_VERBOSE) {
-                System.out.println("MAPPER: detectado header na primeira linha, ignorando.");
-            }
+        String line = value.toString();
+        if (line == null || line.trim().isEmpty()) {
             return;
         }
 
-        String[] cols = CSV_SPLIT.split(line, -1);
-        if (cols.length < 12) {
-            if (LOG_VERBOSE) {
-                System.out.println("MAPPER: linha ignorada por ter menos de 12 colunas. Linha=" + line);
-            }
+        // pula o cabeçalho
+        if (line.startsWith("show_id,")) {
             return;
         }
 
-        String title = unquote(cols[2]);
-        String description = unquote(cols[11]);
-
-        // normalização robusta
-        String norm = normalize(description);
-        // sempre contamos a descrição para média (mesmo vazia)
-        writeQuiet(ctx, DESCRIPTIONS_COUNT_KEY, ONE);
-
-        if (norm.isEmpty()) {
-            Text lenKey = new Text("TITLELEN:" + title);
-            writeQuiet(ctx, lenKey, new IntWritable(0));
-
-            // Log amostral (primeiras 5 linhas vazias)
-            if (loggedLines < 5) {
-                System.out.println("MAPPER: descrição vazia para título: \"" + title + "\" (len=0).");
-                loggedLines++;
-            }
+        List<String> fields = parseCsvLine(line);
+        // Esperado: 12 colunas
+        if (fields.size() < 12) {
             return;
         }
 
-        String[] tokens = norm.split("\\s+");
-        int accepted = 0;
+        String type        = safe(fields.get(1));  // Movie / TV Show
+        String country     = safe(fields.get(5));
+        String releaseYear = safe(fields.get(7));
+        String rating      = safe(fields.get(8));
+        String duration    = safe(fields.get(9));
+        String listedIn    = safe(fields.get(10));
 
-        for (String t : tokens) {
-            if (t.isEmpty()) continue;
-            if (t.length() < minTokenLen) continue;
-
-            String tok = stripAccents(t);
-            if (ignoreStopwords && stop.contains(tok)) continue;
-
-            WORD_KEY.set("WORD:" + tok);
-            writeQuiet(ctx, WORD_KEY, ONE);
-            accepted++;
+        // 1) Contagem por tipo
+        if (!type.isEmpty()) {
+            outKey.set("TYPE|" + type);
+            context.write(outKey, ONE);
         }
 
-        // totais e estatísticas por descrição
-        writeQuiet(ctx, TOTAL_WORDS_KEY, new IntWritable(accepted));
-        Text lenKey = new Text("TITLELEN:" + title);
-        writeQuiet(ctx, lenKey, new IntWritable(accepted));
+        // 2) Contagem de gêneros globais e por ano
+        if (!listedIn.isEmpty()) {
+            String[] genres = listedIn.split(",\\s*");
+            for (String g : genres) {
+                if (g.isEmpty()) continue;
 
-        // Log amostral: primeiras 5 linhas e depois a cada 100k
-        if (loggedLines < 5 || (lineCount % 100000 == 0)) {
-            System.out.println("MAPPER: título=\"" + title + "\" | tokens aceitos=" + accepted + " | exemploTexto=\"" +
-                    (norm.length() > 60 ? norm.substring(0, 60) + "..." : norm) + "\"");
-            loggedLines++;
+                // GENRE|Comedies
+                outKey.set("GENRE|" + g);
+                context.write(outKey, ONE);
+
+                // GENRE_YEAR|2020|Comedies
+                if (!releaseYear.isEmpty()) {
+                    outKey.set("GENRE_YEAR|" + releaseYear + "|" + g);
+                    context.write(outKey, ONE);
+                }
+            }
+        }
+
+        // 3) Contagem de países
+        if (!country.isEmpty()) {
+            String[] cs = country.split(",\\s*");
+            for (String c : cs) {
+                if (c.isEmpty()) continue;
+                outKey.set("COUNTRY|" + c);
+                context.write(outKey, ONE);
+            }
+        }
+
+        // 4) Rating por tipo (ex: RATING|Movie|TV-14)
+        if (!rating.isEmpty() && !type.isEmpty()) {
+            outKey.set("RATING|" + type + "|" + rating);
+            context.write(outKey, ONE);
+        }
+
+        // 5) Duração de filmes em buckets + número de temporadas em séries
+        if ("Movie".equals(type)) {
+            Integer minutes = parseLeadingInt(duration);
+            if (minutes != null) {
+                String bucket = durationBucket(minutes); // <90, 90-110, >110
+                outKey.set("MOVIE_BUCKET|" + bucket);
+                context.write(outKey, ONE);
+            }
+        } else if ("TV Show".equals(type)) {
+            // Normaliza para remover "season"/"seasons" e evitar pegar lixo tipo "s"
+            String normDuration = duration.toLowerCase()
+                    .replace("seasons", "")
+                    .replace("season", "")
+                    .trim();
+
+            Integer seasons = parseLeadingInt(normDuration); // "2" -> 2
+            if (seasons != null) {
+                outKey.set("SEASONS|" + seasons);
+                context.write(outKey, ONE);
+            }
         }
     }
 
-    private static String unquote(String s) {
-        if (s == null) return "";
+    // --- Funções auxiliares ---
+
+    private static String safe(String s) {
+        return (s == null) ? "" : s.trim();
+    }
+
+    private static Integer parseLeadingInt(String s) {
+        if (s == null) return null;
         s = s.trim();
-        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
-            s = s.substring(1, s.length() - 1);
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (Character.isDigit(ch)) {
+                digits.append(ch);
+            } else {
+                break;
+            }
         }
-        return s;
+        if (digits.length() == 0) return null;
+        try {
+            return Integer.parseInt(digits.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
-    private static String normalize(String s) {
-        if (s == null) return "";
-        String lower = s.toLowerCase(Locale.ROOT);
-        String noAccents = stripAccents(lower);
-        // mantém letras (qualquer idioma), dígitos e espaço
-        noAccents = noAccents.replaceAll("[^\\p{L}\\p{Nd}'\\s]+", " ");
-        return noAccents.trim().replaceAll("\\s{2,}", " ");
+    private static String durationBucket(int minutes) {
+        if (minutes < 90) return "<90";
+        if (minutes <= 110) return "90-110";
+        return ">110";
     }
 
-    private static String stripAccents(String input) {
-        String n = Normalizer.normalize(input, Normalizer.Form.NFD);
-        return n.replaceAll("\\p{M}+", "");
-    }
+    /**
+     * Parser simples de CSV que respeita aspas.
+     * Não é perfeito para todos os casos, mas funciona bem para o formato do netflix_titles.csv.
+     */
+    private static List<String> parseCsvLine(String line) {
+        List<String> result = new ArrayList<>();
+        if (line == null) return result;
 
-    private static void writeQuiet(Context ctx, Text k, IntWritable v) {
-        try { ctx.write(k, v); } catch (Exception ignored) {}
-    }
+        StringBuilder current = new StringBuilder();
+        boolean inQuotes = false;
 
-    @Override
-    protected void cleanup(Context context) {
-        System.out.println("=== MAPPER: cleanup ===");
-        System.out.println("Total de linhas lidas pelo map task: " + lineCount);
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+
+            if (ch == '"') {
+                inQuotes = !inQuotes; // alterna
+            } else if (ch == ',' && !inQuotes) {
+                result.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        result.add(current.toString());
+        return result;
     }
 }

@@ -16,32 +16,23 @@ import java.util.Arrays;
 public class NetflixDriver {
     public static void main(String[] args) throws Exception {
         Instant start = Instant.now();
+
+        // FORMATO ÚNICO SUPORTADO:
+        // hadoop jar <jar> com.example.netflix.NetflixDriver <input> <output> [--ignore-sw]
         if (args.length < 2) {
-            System.err.println("Uso: hadoop jar netflix-mapreduce.jar <input> <output> [--ignore-sw]");
+            System.err.println("Uso: hadoop jar netflix-mapreduce-1.0.0.jar com.example.netflix.NetflixDriver <input> <output> [--ignore-sw]");
             System.exit(1);
         }
 
-        // LOG: argumentos recebidos
         System.out.println("=== DRIVER: Iniciando job Netflix Descriptions Analysis ===");
         System.out.println("Args recebidos (" + args.length + "): " + Arrays.toString(args));
 
-        // Suporta dois formatos:
-        // a) hadoop jar ... com.example.netflix.NetflixDriver <input> <output>
-        // b) hadoop jar ... <input> <output>
-        int base = 0;
-        if (args[0].contains(".") && args[0].contains("com.example.netflix")) {
-            base = 1;
-            if (args.length - base < 2) {
-                System.err.println("Uso (com classe): hadoop jar <jar> com.example.netflix.NetflixDriver <input> <output> [--ignore-sw]");
-                System.exit(1);
-            }
-        }
-
-        String inputPath = args[base];
-        String outputPath = args[base + 1];
+        // Sem gambiarra de "base": posição fixa
+        String inputPath  = args[0];
+        String outputPath = args[1];
 
         boolean ignoreSW = false;
-        if (args.length > base + 2 && "--ignore-sw".equalsIgnoreCase(args[base + 2])) {
+        if (args.length > 2 && "--ignore-sw".equalsIgnoreCase(args[2])) {
             ignoreSW = true;
         }
 
@@ -50,15 +41,16 @@ public class NetflixDriver {
         System.out.println("Ignore Stopwords ...: " + ignoreSW);
 
         Configuration conf = new Configuration();
-        if (ignoreSW) conf.set("ignore.stopwords", "true");
+        if (ignoreSW) {
+            conf.set("ignore.stopwords", "true");
+        }
 
-        // Habilita/ajusta verbosidade de logs no Mapper/Reducer (padrão: false)
-        // Rode com: -Dlog.verbose=true para ver mais detalhes por linha/chave
+        // Verbosidade opcional: -Dlog.verbose=true
         if (System.getProperty("log.verbose") != null) {
             conf.set("log.verbose", System.getProperty("log.verbose"));
         }
 
-        // Opcional: tamanho mínimo do token, ex.: -Dmin.token.len=2
+        // Tamanho mínimo de token opcional: -Dmin.token.len=2
         if (System.getProperty("min.token.len") != null) {
             conf.set("min.token.len", System.getProperty("min.token.len"));
         }
@@ -87,7 +79,6 @@ public class NetflixDriver {
         System.out.println("=== DRIVER: Job finalizado. Sucesso=" + ok + " ===");
         Instant end = Instant.now();
         System.out.println("Tempo total (s) ....: " + Duration.between(start, end).getSeconds());
-
 
         System.exit(ok ? 0 : 1);
     }
